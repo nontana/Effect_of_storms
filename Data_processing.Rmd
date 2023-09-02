@@ -1,0 +1,445 @@
+---
+title: "Effects of natural disasters to population health and economics in the United State (1950-2011)"
+author: "Tanawut Noungneaw"
+date: "2023-08-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Synopsis
+The processing and analysis data below are used to answer the following questions:
+
+Q1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+Q2. Across the United States, which types of events have the greatest economic consequences?
+
+This project involves exploring the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. 
+
+[Storm data](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2). 
+
+This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.
+
+## Loading necessary libraries
+```{r loading library, message=FALSE,echo=TRUE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+## Loading and preprocessing the data
+```{r download and read, cache=TRUE, echo=TRUE}
+# Set the url for download the data and path for its location
+url <-"https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+path <- "stormdata.csv.bz2"
+# Check the existent of data in zip file. If it isn't downloaded,
+# this part will download it.
+if(!file.exists("stormdata.csv.bz2")){
+  download.file(url, path, method = "curl")
+}
+# Load  data
+data <- read.csv("stormdata.csv.bz2")
+```
+
+## Checking the datasets' dimensions and structure
+```{r data checking, echo=TRUE}
+# Dimensions checking
+dim(data)
+# Structure checking
+str(data)
+```
+
+# Data processing
+## Subsetting data
+```{r filter data, echo=TRUE}
+# Select only the interested columns
+cols = c("COUNTY", "STATE","EVTYPE","FATALITIES","INJURIES",
+         "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP","BGN_DATE",
+         "END_DATE")
+usedata <- data[, cols]
+# Filter no damage results off
+subdata <- subset(usedata,  FATALITIES > 0 | INJURIES > 0 | PROPDMG > 0 |
+                  CROPDMG >0)
+```
+
+## Replacing multipliers with its values in scientific notation
+The "PROPDMGEXP" and "CROPDMGEXP" columns represent the multiplier that multiply to the "PROPDMG" and "CROPDMG", respectively. According to the [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) page 12, the alphabet `B` stands for billions, `M` stands for millions, and `K` stands for thousands.
+In this case, there is an alphabet `H`, which I used for hundreds. These alphabets are used in
+the same way for lowercase and uppercase. The other symbol such as no spacing (`""`), `+`, `-`,
+and `?`, are replaced by `1` for multiplication.
+
+```{r multiplier and event names, echo=TRUE}
+# Property damage multiplier
+table(toupper(subdata$PROPDMGEXP))
+# Crop damage multiplier
+table(toupper(subdata$CROPDMGEXP))
+# PROPDMGEXP
+for (i in unique(subdata$PROPDMGEXP)){
+  if(i %in% as.character(c(0:10))){
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP==i] <- paste("1e",i,sep = "")
+  }
+  else if(toupper(i) %in% c("K","H","M","B")){
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP=="h" | 
+                         subdata$PROPDMGEXP=="H"] <- paste("1e","2",sep = "")
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP=="k" | 
+                         subdata$PROPDMGEXP=="K"] <- paste("1e","3",sep = "")
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP=="m" | 
+                         subdata$PROPDMGEXP=="M"] <- paste("1e","6",sep = "")
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP=="b" | 
+                         subdata$PROPDMGEXP=="B"] <- paste("1e","9",sep = "")
+  }
+  else {
+    subdata$PROPDMGEXP[subdata$PROPDMGEXP==""|  subdata$PROPDMGEXP=="-" | 
+                         subdata$PROPDMGEXP=="+"] <- "1"
+  }
+}
+# CROPDMGEXP
+for (i in unique(subdata$CROPDMGEXP)){
+  if(i %in% as.character(c(0:10))){
+    subdata$CROPDMGEXP[subdata$CROPDMGEXP==i] <- paste("1e",i,sep = "")
+  }
+  else if(toupper(i) %in% c("K","M","B")){
+    subdata$CROPDMGEXP[subdata$CROPDMGEXP=="k" | 
+                         subdata$CROPDMGEXP=="K"] <- paste("1e","3",sep = "")
+    subdata$CROPDMGEXP[subdata$CROPDMGEXP=="m" | 
+                         subdata$CROPDMGEXP=="M"] <- paste("1e","6",sep = "")
+    subdata$CROPDMGEXP[subdata$CROPDMGEXP=="b" | 
+                         subdata$CROPDMGEXP=="B"] <- paste("1e","9",sep = "")
+  }
+  else {
+    subdata$CROPDMGEXP[subdata$CROPDMGEXP==""|  subdata$CROPDMGEXP=="?"] <- "1"
+  }
+}
+# Change character class to numeric class
+subdata$PROPDMGEXP <- as.numeric(subdata$PROPDMGEXP)
+subdata$CROPDMGEXP <- as.numeric(subdata$CROPDMGEXP)
+
+# Property damage multiplier
+table(toupper(subdata$PROPDMGEXP))
+# Crop damage multiplier
+table(toupper(subdata$CROPDMGEXP))
+```
+
+## Event names cleaning
+The contents in column `EVTYPE` are really messed data. There are a lot of event names that can be categorized by the same group, but their spelling are incorrect. Some events can be categorized in many groups due to its overlapping. In this case, the [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) page 6 shows the 48 types of event that can be considered. The chuck below is used for cleaning this messed data by replacing it with the event names in the table from documentation. It may not be accurate due to the reasons that mentioned above. Lastly, I combined all of the events that cannot be grouped, and called, `Other`.
+
+```{r Event names cleaning, cache=TRUE, echo=TRUE}
+## Replacing event names
+# Event table names
+evnames <- c("Astronomical Low Tide", "Avalanche","Blizzard", "Coastal Flood",
+             "Cold/Wind Chill", "Debris Flow", "Dense Fog", "Dense Smoke", 
+             "Drought","Dust Devil","Dust Storm","Excessive Heat",
+             "Extreme Cold/Wind Chill","Flash Flood","Flood","Frost/Freeze",
+             "Funnel Cloud","Freezing Fog","Hail","Heat","Heavy Rain",
+             "Heavy Snow","High Surf", "High Wind", "Hurricane (Typhoon)",
+             "Ice Storm","Lake-Effect Snow","Lakeshore Flood","Lightning",
+             "Marine Hail", "Marine High Wind", "Marine Strong Wind",
+             "Marine Thunderstorm Wind", "Rip Current", "Seiche", "Sleet",
+             "Storm Surge/Tide", "Strong Wind", "Thunderstorm Wind", "Tornado",
+             "Tropical Depression","Tropical Storm","Tsunami", "Volcanic Ash",
+             "Waterspout", "Wildfire","Winter Storm","Winter Weather")
+designator <- c("Z","Z","Z","Z","Z","C","Z","Z","Z","C","Z","Z","Z","C","C",
+                "Z","C","Z","C","Z","C","Z","Z","Z","Z","Z","Z","Z","C","M",
+                "M","M","M","Z","Z","Z","Z","Z","C","C","Z","Z","Z","Z","M",
+                "Z","Z","Z")
+event <- data.frame(EVTYPE = evnames, Designator = designator)
+defined <- data.frame(Designator = c("C","Z","M"),
+                      Def = c("Country/Parish", "Zone", "Marine"))
+eventdf <- merge(x = event, y = defined, by = "Designator")
+# Assign EVTYPE by the first event name
+for (i in unique(eventdf$EVTYPE)) {
+  subdata$EVTYPE[grep(paste("^", i ,sep = ""), subdata$EVTYPE, 
+                      ignore.case = TRUE)] <- i
+}
+
+# Wildfire
+subdata$EVTYPE[grep("Fire", subdata$EVTYPE, ignore.case = TRUE)] <- "Wildfire"
+# Thunderstorm wind
+subdata$EVTYPE[grep("MARINE TSTM WIND", subdata$EVTYPE, 
+                    ignore.case = TRUE)] <- "Marine Thunderstorm Wind"
+subdata$EVTYPE[grep("Non", subdata$EVTYPE, ignore.case = TRUE, 
+                    perl = TRUE)] <- "Strong Wind"
+subdata$EVTYPE[grep("TSTM", subdata$EVTYPE, 
+                    ignore.case = TRUE)] <- "Thunderstorm Wind"
+subdata$EVTYPE[grep("THUNDER", subdata$EVTYPE, 
+                    ignore.case = FALSE)] <- "Thunderstorm Wind"
+# Coastal Flood, Flash Flood , Flood and Lakeshore Flood
+subdata$EVTYPE[grep("Flash Flood", subdata$EVTYPE, 
+                    ignore.case = TRUE)] <- "Flash Flood"
+subdata$EVTYPE[grep("(COASTAL).*FLOOD", subdata$EVTYPE, 
+                    ignore.case = TRUE,perl = TRUE)] <- "Coastal Flood"
+subdata$EVTYPE[grep("(erosion).*FLOOD", subdata$EVTYPE, 
+                    ignore.case = TRUE,perl = TRUE)] <- "Coastal Flood"
+subdata$EVTYPE[grep("(ICE JAM).FLOOD", subdata$EVTYPE,
+                    ignore.case = TRUE,perl = TRUE)] <- "Flash Flood"
+subdata$EVTYPE[grep("(SNOWMELT).FLOOD", subdata$EVTYPE,
+                    ignore.case = TRUE,perl = TRUE)]  <- "Flash Flood"
+subdata$EVTYPE[grep("(river|lake).*flood", subdata$EVTYPE,
+                    ignore.case = TRUE,perl = TRUE)] <- "Lakeshore Flood"
+subdata$EVTYPE[grep("^[^flood|coastal].*flood", subdata$EVTYPE,
+                    ignore.case = TRUE,perl = TRUE)] <- "Flash Flood"
+subdata$EVTYPE[grep("tidal|stream", subdata$EVTYPE,
+                    ignore.case = TRUE,perl = TRUE)] <- "Flash Flood"
+# Surf
+subdata$EVTYPE[grep("surf", subdata$EVTYPE,ignore.case = TRUE)] <- "High Surf"
+# Heat
+subdata$EVTYPE[grep("(excessive heat)", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Excessive Heat"
+subdata$EVTYPE[grep("extreme heat", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Excessive Heat"
+subdata$EVTYPE[grep("(?=.*heat)^(?!.*excessive)", subdata$EVTYPE, 
+                    ignore.case = TRUE,perl = TRUE)] <- "Heat"
+# Tornado
+subdata$EVTYPE[grep("TORN", subdata$EVTYPE, ignore.case = TRUE)] <- "Tornado"
+# Thunder
+subdata$EVTYPE[grep("THU", subdata$EVTYPE,
+                    ignore.case = FALSE)] <- "Thunderstorm Wind"
+subdata$EVTYPE[grep("TUN", subdata$EVTYPE,
+                    ignore.case = FALSE)] <- "Thunderstorm Wind"
+subdata$EVTYPE[grep("surge", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Storm Surge/Tide"
+subdata$EVTYPE[grep("coastal.*(storm)", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Storm Surge/Tide"
+# Winter
+subdata$EVTYPE[grep("ICE STORM", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Ice Storm"
+subdata$EVTYPE[grep("FREEZING RAIN", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Ice Storm"
+subdata$EVTYPE[grep("FREEZING DRIZZLE", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Ice Storm"
+subdata$EVTYPE[grep("EFFECT", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Lake-Effect Snow"
+subdata$EVTYPE[grep("(?=.*ice)(?!.*storm)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "Winter Weather"
+subdata$EVTYPE[grep("heavy .*snow", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Heavy Snow"
+subdata$EVTYPE[grep("^(?!.*heavy)^(?!.*lake)(?=.*snow)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "Winter Weather"
+subdata$EVTYPE[grep("(?=.*freez)(?!.*fog)(?!.*spray)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl=TRUE)] <- "Frost/Freeze"
+subdata$EVTYPE[grep("frost", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Frost/Freeze"
+subdata$EVTYPE[grep("Glaze", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Frost/Freeze"
+# Cold
+subdata$EVTYPE[grep("extreme cold", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl=TRUE)] <- "Extreme Cold/Wind Chill"
+subdata$EVTYPE[grep("(?=.*cold)^(?!.*extreme)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl=TRUE)] <- "Cold/Wind Chill"
+subdata$EVTYPE[grep("(?=.*HAIL)^(?!.*marine)", subdata$EVTYPE,
+                    ignore.case = TRUE, perl=TRUE)] <- "Hail"
+subdata$EVTYPE[grep("icy", subdata$EVTYPE,
+                    ignore.case = TRUE, perl=TRUE)] <- "Winter Weather"
+subdata$EVTYPE[grep("LOW TEMPERATURE",
+                    subdata$EVTYPE, ignore.case = TRUE)] <- "Cold/Wind Chill"
+subdata$EVTYPE[grep("BLIZZARD", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Blizzard"
+subdata$EVTYPE[grep("COOL", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "Cold/Wind Chill"
+# Avalanche
+subdata$EVTYPE[grep("AVAL", subdata$EVTYPE,
+                    ignore.case = TRUE, perl=TRUE)] <- "Avalanche"
+# Hurricane
+subdata$EVTYPE[grep("Hurricane", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Hurricane (Typhoon)"
+subdata$EVTYPE[grep("TYPHOON", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Hurricane (Typhoon)"
+# Rain
+subdata$EVTYPE[grep("RAIN", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Heavy Rain" 
+subdata$EVTYPE[grep("HEAVY SHOWER", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Heavy Rain" 
+# Lightning
+subdata$EVTYPE[grep("lig", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Lightning"
+# Wind
+subdata$EVTYPE[grep("(?=.*HIGH)(?=.*WIND)^(?!.*marine)", subdata$EVTYPE, 
+                    ignore.case = TRUE,perl = TRUE)] <- "High Wind"
+subdata$EVTYPE[grep("gust", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Strong Wind"
+subdata$EVTYPE[grep("^WIND", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Strong Wind"
+subdata$EVTYPE[grep("(?=.*wind)(?=.*chill)^(?=.*extreme)",subdata$EVTYPE,
+                  ignore.case = TRUE,perl = TRUE)] <- "Extreme Cold/Wind Chill"
+subdata$EVTYPE[grep("Whirlwind", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Dust Devil"
+subdata$EVTYPE[grep("(?=.*MI)(?=.*wind)", subdata$EVTYPE, 
+                    ignore.case = TRUE,perl = TRUE)] <- "Strong Wind"
+subdata$EVTYPE[grep("STORM FORCE WINDS", subdata$EVTYPE, 
+                    ignore.case = TRUE)] <- "Hurricane (Typhoon)"
+subdata$EVTYPE[grep("Gradient", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "High Wind"
+subdata$EVTYPE[grep("BLOWING DUST", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Dust Devil"
+subdata$EVTYPE[grep("burst", subdata$EVTYPE,
+                    ignore.case = TRUE)] <- "Strong Wind"
+
+# High waves
+subdata$EVTYPE[grep("(?=.*high)(?!.*wind)^(?!.*ASTRO)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "High Surf"
+subdata$EVTYPE[grep("SEAS$", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "High Surf"
+subdata$EVTYPE[grep("wave", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "High Surf"
+subdata$EVTYPE[grep("SWELL", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "High Surf"
+
+# ETC (the remnants)
+subdata$EVTYPE[grep("(?=.*FOG)^(?!.*freez)", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "Dense Fog"
+subdata$EVTYPE[grep("TURBULENCE", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "High Wind"
+subdata$EVTYPE[grep("Wintry", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "Winter Weather"
+subdata$EVTYPE[grep("mix", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "Winter Weather"
+subdata$EVTYPE[grep("PREC", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "Heavy Rain"
+subdata$EVTYPE[grep("Hypothermia", subdata$EVTYPE, 
+                    ignore.case = TRUE, perl = TRUE)] <- "Cold/Wind Chill"
+subdata$EVTYPE[grep("Hyperthermia", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "Heat"
+subdata$EVTYPE[grep("LANDSPOUT", subdata$EVTYPE,
+                    ignore.case = TRUE, perl = TRUE)] <- "Tornado"
+
+# ?
+subdata$EVTYPE[subdata$EVTYPE=="?"] <- "Other"
+#############################################################################
+# Matching all the event names, if it's not in events, then assign as "Other"
+datasave <- subdata
+for (i in unique(datasave$EVTYPE)) {
+  subdata$EVTYPE[grep(paste("^", i ,sep = ""), subdata$EVTYPE, 
+                      ignore.case = TRUE)] <- i
+}
+for (i in unique(datasave$EVTYPE)) {
+  if(!(i %in% eventdf$EVTYPE)){
+    datasave$EVTYPE[grep(i, datasave$EVTYPE, 
+                         ignore.case = TRUE, perl = TRUE)] <- "Other"
+  }
+}
+# Print all cleaned event types
+table((datasave$EVTYPE))
+
+# date time cleaning
+# Change begin date and end date from character class to date class
+datasave$BGN_DATE <- as.Date(datasave$BGN_DATE, format = "%m/%d/%Y %H:%M:%S")
+datasave$END_DATE <- as.Date(datasave$END_DATE, format = "%m/%d/%Y %H:%M:%S")
+# Add new column called REC_DATE to determine the period of recording
+datasave$REC_DATE <- datasave$END_DATE - datasave$BGN_DATE
+# Add new row to specify the event name "Other" as Undefined event
+eventdf <- rbind(eventdf,c("U","Other","Undefinded"))
+# Merge datasets with designators
+alldata <- merge(x = datasave, y = eventdf, by = "EVTYPE")
+## summaries health and economics damage
+sumevents <- alldata %>%
+            group_by(EVTYPE, Def) %>%
+            summarise(SUMFATALITIES = sum(FATALITIES),
+                      SUMINJURIES = sum(INJURIES),
+                      SUMHEALTH = sum(SUMFATALITIES + SUMINJURIES),
+                      SUMPROP = sum(PROPDMG*PROPDMGEXP),
+                      SUMCROP = sum(CROPDMG*CROPDMGEXP),
+                      SUMECODMG = sum(SUMPROP+SUMCROP))
+# Change column name to use in next part
+colnames(sumevents)[2] <- "Designators"
+```
+
+# Results
+## Total harmful damage to health
+```{r plot harmful damage to health, echo=TRUE}
+# Total health damage (top 10) by designators
+ordsumevents <- sumevents %>% arrange(desc(SUMHEALTH))
+ordsumevents <- ordsumevents[1:10,]
+g <- ggplot(ordsumevents, aes(x = SUMHEALTH, y = EVTYPE, fill = Designators))
+g + geom_bar(stat = "identity") +
+  xlab("Total harmful damage to health") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events for total population health by designators") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_bw()
+# Total health damage (top 10) by each type of harmful damage
+tose <- ordsumevents %>% 
+        pivot_longer(names_to = "Damage", values_to = "Value",
+                     cols = c("SUMFATALITIES", "SUMINJURIES", "SUMHEALTH"))
+g <- ggplot(tose, aes(x = Value, y = EVTYPE, fill = Damage))
+g + geom_col(position = "dodge") +
+  xlab("Total harmful damage to health") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events for total population health by damage type") +
+  scale_fill_brewer(palette = "Paired", 
+                    labels=c("Fatalities", "Total health damage", "Injuries")) +
+  theme_bw()
+```
+
+From the two figures above, tornado is the most harmful event for population health. 
+It comes with the highest fatalities and injuries (almost 100,000) compare to the other events.
+The other events have the number of health damages lower than 12,5000.
+
+## Total economics damage
+```{r plot economics damage, echo=TRUE}
+# Total economics damage (top 10) by designator
+ordsumevents <- sumevents %>% arrange(desc(SUMECODMG))
+ordsumevents <- ordsumevents[1:10,]
+g <- ggplot(ordsumevents, 
+            aes(x = SUMECODMG/1e6, y = EVTYPE, fill = Designators))
+g + geom_bar(stat = "identity") +
+  xlab("Total economics damage (M$)") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events and total economics damage by designators") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_bw()
+# Total economics damage (top 10) by each type of harmful damage
+tose <- ordsumevents %>% 
+        pivot_longer(names_to = "Damage", values_to = "Value",
+                     cols = c("SUMPROP", "SUMCROP"))
+g <- ggplot(tose, aes(x = Value/1e6, y = EVTYPE, fill = Damage))
+g + geom_col(position = "dodge") +
+  xlab("Total economics damage (M$)") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events and total economics damage by damage type") +
+  scale_fill_brewer(palette = "Paired", labels=c("Crops", "Properties")) +
+  theme_bw()
+```
+
+From the two figures above, it show that floods have the greatest consequences to the economics
+than the other damages, especially, the damage to properties. The second and third places are
+hurricane and tornado, respectively. Then, the properties and crops damage have been considered
+to be examined individually which show the results below.
+
+## Total properties damage
+```{r plot properties damage, echo=TRUE}
+# Total properties damage (top 10)
+ordsumevents <- ordsumevents %>% arrange(desc(SUMPROP))
+ordsumevents <- ordsumevents[1:10,]
+g <- ggplot(ordsumevents, aes(x = SUMPROP/1e6, y = EVTYPE, fill = Designators))
+g + geom_bar(stat = "identity") +
+  xlab("Total properties damage (M$)") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events and total properties damage by designators") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_bw()
+```
+
+The top 10 total properties damage shows the same event type and trend as the 
+economics consequences results, but different in total damages.
+ 
+## Total crops damage
+```{r plot crop damage, echo=TRUE}
+# Total crop damage (top 10)
+ordsumevents <- ordsumevents %>% arrange(desc(SUMCROP))
+ordsumevents <- ordsumevents[1:10,]
+g <- ggplot(ordsumevents, aes(x = SUMCROP/1e6, y = EVTYPE, fill = Designators))
+g + geom_bar(stat = "identity") +
+  xlab("Total crop damage (M$)") +
+  ylab("Event type") +
+  ggtitle("Top 10 harmful events and total crop damage by designators") +
+  scale_fill_brewer(palette = "Accent") +
+  theme_bw()
+```
+
+The top 10 total crop damage is different from the economics and properties damage.
+In this case, the greatest damage is created by drought, while the flood got the second place.
+
+# Conclusion
+To conclude, tornado was the greatest harmful event that affects United State population from year 1950 to November 2011. It caused almost 100,000 injuries and casualties in total. For economics, the greatest harmful event was flood, which caused around 150B, especially, for properties damage. However, the highest damaged for crop individually was caused by drought instead of flood, which caused around 15B. 
